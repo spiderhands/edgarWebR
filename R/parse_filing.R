@@ -171,117 +171,75 @@ doc_nodes <- function(doc, xpath_base) {
   # filings prevents anything much more robust.
   # xpath_parts <- c( "//div[count(.//div) < 1]")
   xpath_parts <- c(
-    "/*[name() != 'div' and
-        not(font[count(div) > 1]) and
-        not(starts-with(tr[2], 'PART') or
-            starts-with(tr[2], ' PART'))]",
-    "/div[count(p|div) <= 1 and
-          not(div[count(div) > 1]) and
-          not(count(div/div/div) > 1) and
-          count(div/font) = 0]",
-    "/div[count(p|div) <= 1 and
-          count(div/div) > 1 and
-          count(div/div/div) <= 1]/div/*",
-    "/div[count(p|div) <= 1 and
-          count(div/div) > 1 and
-          count(div/div/div) >= 1]/div/div/*[count(div) < 1]",
-    "/div[count(div) <= 1 and
-          count(div/div/div) > 1 and
-          count(div/div/div/div/div) <= 1 and
-          count(div/div/div/*) < 1]/div/div/div[count(div) < 1]",
-    "/div[count(div/div/div/div/*) > 1]/div/div/div/div/*",
-    "/div[count(div/div/div/div/*) > 1]/div/div/div/div[count(*) < 1]",
-    "/div[count(div/div/div/*) >= 1 and
-          count(div/div/div/div/*) < 1]/div/div/div/*[name() != 'font' and
-                                                      name() != 'table']",
-    "/div/div/div/div/font",
-    "/div[count(p|div) <= 1 and
-          count(div/div) > 1 and
-          count(div/div/div) <= 1]/div/*",
-    "/div[./ul and ./div]/div/font",
-    "/div[./ul and ./div]/ul/li",
-    "/div[count(p|div) > 1]/*[count(b|div) <= 1 and count(div/div) < 1]",
-    "/div[count(p|div) > 1]/div[count(b|div) <= 1 and count(div/div) > 1]",
-    "/div[count(p|div) > 1]/*[count(b|div) > 1]/*[count(div) <= 1]",
-    "/div[count(p|div) > 1]/*[count(b|div) > 1]/div[count(div) = 1]/div[count(div) = 1]/div",
-    "/div[count(p|div) > 1]/*[count(b|div) > 1]/*[count(div)> 1]/*[count(div) < 1]",
-    "/div[count(div) = 1]/div[count(div) = 1]/div[count(p)> 1]/*",
-    "/div[count(div) = 1]/div[count(font) = count(*)]/font",
-    "/div[count(div) = 1]/div/font[count(*) = 0]",
-    "/div[count(div) = 1]/div/div/table",
-    "/div/font[count(*) = 0]",
-    "/div/pre",
-    "/p/font[count(p|div) > 1]/*",
-    "/div/table[count(./tr) = count(./tr/td)]/tr/td/div",
-    "/table[starts-with(tr[2], 'PART') or starts-with(tr[2], ' PART')]/tr",
+    # Nesting in center tags
+    # https://www.sec.gov/Archives/edgar/data/886982/000119312519050198/d669877d10k.htm
+    "/center/div/p",
+    "/center/div/div/p"
+    # "/*[name() != 'div' and
+    #     not(font[count(div) > 1]) and
+    #     not(starts-with(tr[2], 'PART') or
+    #         starts-with(tr[2], ' PART'))]",
+    # "/div[count(p|div) <= 1 and
+    #       not(div[count(div) > 1]) and
+    #       not(count(div/div/div) > 1) and
+    #       count(div/font) = 0]",
+    # "/div[count(p|div) <= 1 and
+    #       count(div/div) > 1 and
+    #       count(div/div/div) <= 1]/div/*",
+    # "/div[count(p|div) <= 1 and
+    #       count(div/div) > 1 and
+    #       count(div/div/div) >= 1]/div/div/*[count(div) < 1]",
+    # "/div[count(div) <= 1 and
+    #       count(div/div/div) > 1 and
+    #       count(div/div/div/div/div) <= 1 and
+    #       count(div/div/div/*) < 1]/div/div/div[count(div) < 1]",
+    # "/div[count(div/div/div/div/*) > 1]/div/div/div/div/*",
+    # "/div[count(div/div/div/div/*) > 1]/div/div/div/div[count(*) < 1]",
+    # "/div[count(div/div/div/*) >= 1 and
+    #       count(div/div/div/div/*) < 1]/div/div/div/*[name() != 'font' and
+    #                                                   name() != 'table']",
+    # "/div/div/div/div/font",
+    # "/div[count(p|div) <= 1 and
+    #       count(div/div) > 1 and
+    #       count(div/div/div) <= 1]/div/*",
+    # "/div[./ul and ./div]/div/font",
+    # "/div[./ul and ./div]/ul/li",
+    # "/div[count(p|div) > 1]/*[count(b|div) <= 1 and count(div/div) < 1]",
+    # "/div[count(p|div) > 1]/div[count(b|div) <= 1 and count(div/div) > 1]",
+    # "/div[count(p|div) > 1]/*[count(b|div) > 1]/*[count(div) <= 1]",
+    # "/div[count(p|div) > 1]/*[count(b|div) > 1]/div[count(div) = 1]/div[count(div) = 1]/div",
+    # "/div[count(p|div) > 1]/*[count(b|div) > 1]/*[count(div)> 1]/*[count(div) < 1]",
+    # "/div[count(div) = 1]/div[count(div) = 1]/div[count(p)> 1]/*",
+    # "/div[count(div) = 1]/div[count(font) = count(*)]/font",
+    # "/div[count(div) = 1]/div/font[count(*) = 0]",
+    # "/div[count(div) = 1]/div/div/table",
+    # "/div/font[count(*) = 0]",
+    # "/div/pre",
+    # "/p/font[count(p|div) > 1]/*",
+    # "/div/table[count(./tr) = count(./tr/td)]/tr/td/div",
+    # "/table[starts-with(tr[2], 'PART') or starts-with(tr[2], ' PART')]/tr",
 
-    # This deals with poor nesting in EDGARizer
-    "/div/div/text()",
-    # Fix for early versions of EDGARizer
-    "/div/div/div/text()[1]",
-    "/div/div/div/text()[2]",
-    # Catch 'Table of Contents' for Webfilings
-    "/div/div/a",
+    # # This deals with poor nesting in EDGARizer
+    # "/div/div/text()",
+    # # Fix for early versions of EDGARizer
+    # "/div/div/div/text()[1]",
+    # "/div/div/div/text()[2]",
+    # # Catch 'Table of Contents' for Webfilings
+    # "/div/div/a",
 
-    # All multi-column tables
-    "/table[count(./tr) < count(./tr/td)]",
-    "/div/table[count(./tr) < count(./tr/td)]",
-    "/div/div/table[count(./tr) < count(./tr/td)]",
-    "/div/div/div/table[count(./tr) < count(./tr/td)]",
-    "/div/div/div/div/table[count(./tr) < count(./tr/td)]",
-    # "bare" text blocks
-    # Only impacts a few filings for huge performance hit.
-    # "/text()[normalize-space() != '']"
+    # # All multi-column tables
+    # "/table[count(./tr) < count(./tr/td)]",
+    # "/div/table[count(./tr) < count(./tr/td)]",
+    # "/div/div/table[count(./tr) < count(./tr/td)]",
+    # "/div/div/div/table[count(./tr) < count(./tr/td)]",
+    # "/div/div/div/div/table[count(./tr) < count(./tr/td)]",
+    # # "bare" text blocks
+    # # Only impacts a few filings for huge performance hit.
+    # # "/text()[normalize-space() != '']"
 
-    # Nasty deeply nested table from
-    # https://www.sec.gov/Archives/edgar/data/1065648/000106564809000009/form_10k.htm
-    "/div/div/div/div/div/div/div/div/div/div/table"
-    )
-
-
-  ###
-  # Paragraph identification method
-  ###
-  para.nodes <- c("font", paste0("h", seq(5)), "a", "b", "i", "u", "sup")
-  non.para <- c("div", "dl", "li", "hr", "ol", "p", "ul", "table")
-  depths <- c("./", "./*/", "./*/*/")
-  depths <- c("./", "./*/")
-  # depths <- c("./")
-  # bases <- c("//*")
-  bases <- c("/*", "/*/*", "/*/*/*", "/*/*/*/*", "/*/*/*/*/*")
-  xpath_parts_2 <- c(
-    #
-    #paste0("//", c("div", "font", paste0("h", seq(5)), "p"), "[", paste0(c(
-    # perhaps move to not(/p) and not(/*/p) and not (/*/*/p) instead of adding
-    paste0(
-      bases,
-      "[",
-      paste0(c(
-        paste0("not(",
-               apply(expand.grid(depths, non.para), 1, function(x) {
-                       paste0(x, collapse = "")
-               }),
-               ")"),
-      # paste0(c(
-      #   paste0(paste0("count(",
-      #                 apply(expand.grid(depths, para.nodes), 1, function(x) {
-      #                         paste0(x, collapse = "") }),
-      #                 ")",
-      #                 collapse = " + "),
-      #          " = ",
-      #          paste0("count(", depths, "*)", collapse = " + ")),
-
-      # paste0("count(.//*[",
-      #        paste0("local-name() != '", para.nodes, "'", collapse = " and "),
-      #      "]) = 0"),
-      # paste0("local-name(ancestor::*[1]) != '", para.nodes, "'"),
-      "local-name() != 'title'",
-      "local-name() != 'td'"),
-      collapse = " and "),
-      "]"),
-    # Unroll tables-as-formatting
-    "//table[.//tr[count(td) > 1]]",
-    "//table[not(.//tr[count(td) > 1])]/tr/td/*"
+    # # Nasty deeply nested table from
+    # # https://www.sec.gov/Archives/edgar/data/1065648/000106564809000009/form_10k.htm
+    # "/div/div/div/div/div/div/div/div/div/div/table"
     )
 
   xpath_parts <- paste0(xpath_base, xpath_parts)
