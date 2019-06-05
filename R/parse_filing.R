@@ -33,7 +33,8 @@
 parse_filing <- function(x,
                          strip = TRUE,
                          include.raw = FALSE,
-                         fix.errors = TRUE) {
+                         fix.errors = TRUE,
+                         form.type = FALSE) {
   doc <- get_doc(x, clean = T)
 
   xpath_base <- '//text'
@@ -71,7 +72,44 @@ parse_filing <- function(x,
 
   doc.parts$name <- NULL
 
-  doc.parts <- compute_parts(doc.parts)
+  doc.parts <- compute_parts(doc.parts, form.type=form.type)
+
+  not_empty_parts <- doc.parts[doc.parts$item.name != '',]
+
+  if (length(unique(not_empty_parts$item.name)) == 0) {
+    doc.parts <- build_parts(doc,
+                             xpath_base,
+                             include.raw = include.raw,
+                             get_xpath_parts = get_xpath_parts_v2)
+
+    # ToDO: extract to separate function
+    #
+    # same as above
+    #
+    if (strip) {
+      doc.parts <- doc.parts[doc.parts$name != "hr", ]
+    }
+
+    # strip nbspace
+    doc.parts$text <- gsub("(*UCP)^\\s*|\\s*$", "", doc.parts$text, perl = TRUE)
+    if (include.raw) {
+      doc.parts$raw <- gsub("\U00A0", "&#160;", doc.parts$raw)
+    }
+    # QOL improvement
+    doc.parts$text <- gsub("\n", " ", doc.parts$text)
+
+    # Because of how most html versions are processed, each item is a paragraph.
+    if (strip) {
+      doc.parts <- doc.parts[doc.parts$text != "", , drop = FALSE]
+    }
+
+    doc.parts$name <- NULL
+    #
+    # same as above up to here
+    #
+
+    doc.parts <- compute_parts(doc.parts, form.type=form.type)
+  }
 
   return(doc.parts)
 }
@@ -112,7 +150,8 @@ parse_filing <- function(x,
 parse_text_filing <- function(x,
                               strip = TRUE,
                               include.raw = FALSE,
-                              fix.errors = TRUE) {
+                              fix.errors = TRUE,
+                              form.type = FALSE) {
   doc <- charToText(x)
 
   # Make sure page markers are isolated
@@ -139,7 +178,8 @@ parse_text_filing <- function(x,
     parts$raw <- parts$text
   }
 
-  parts <- compute_parts(parts)
+  doc.parts <- compute_parts(doc.parts, form.type=form.type)
+
   return(parts)
 }
 
@@ -147,8 +187,9 @@ parse_text_filing <- function(x,
 #' @noRd
 build_parts <- function(doc, xpath_base,
                         include.raw = F,
-                        include.path = F) {
-  nodes <- doc_nodes(doc, xpath_base)
+                        include.path = F,
+                        get_xpath_parts = get_xpath_parts_v1) {
+  nodes <- doc_nodes(doc, xpath_base, get_xpath_parts = get_xpath_parts)
 
   doc.parts <- data.frame(text = xml2::xml_text(nodes),
                           name = xml2::xml_name(nodes),
@@ -164,7 +205,123 @@ build_parts <- function(doc, xpath_base,
 }
 
 #' @noRd
-doc_nodes <- function(doc, xpath_base) {
+doc_nodes <- function(doc, xpath_base, get_xpath_parts) {
+  xpath_parts <- get_xpath_parts()
+
+  xpath_parts <- paste0(xpath_base, xpath_parts)
+
+  nodes <- xml2::xml_find_all(doc, paste0(xpath_parts, collapse = " | "))
+
+  # ensures no nested nodes
+  paths <- xml2::xml_path(nodes)
+  with.parent <- sapply(paths,
+                        function(path) {
+                          sum(startsWith(path, paths)) > 1
+                        })
+  nodes[!with.parent]
+}
+
+#' Walks into a nodlist, returning nested children
+#' @noRd
+reduce_nodes <- function(nodes) {
+    xml2::xml_find_first(nodes,
+      "descendant-or-self::*[
+        (count(*) + count(text()[normalize-space() != ''])) != 1 or
+        local-name() = 'table' or
+        (count(*) = 0 and count(text()[normalize-space() != ''])) >= 1)]")
+}
+
+#' Part/Item Processing
+#'
+#' @param doc.parsed - A dataframe with at minimum a 'text' column
+#' @param fix.errors - Try to fix document errors (e.g. missing part labels)
+#'        Default: true
+#' @noRd
+compute_parts <- function(doc.parsed,
+                          fix.errors = TRUE,
+                          form.type = FALSE) {
+  return_cols <- colnames(doc.parsed)
+
+  if (nrow(doc.parsed) == 0) {
+    result <- replicate(length(return_cols) + 2, character(), simplify = F)
+    names(result) <- c(return_cols, "item.name", "part.name")
+
+    return(as.data.frame(result))
+  }
+
+  regex <- get_items_extraction_regex()
+  toc_item_regex <- get_toc_items_regex()
+
+  if (form.type == 'S-1' || form.type == 'S-1/A') {
+    regex <- get_s_one_items_extraction_regex()
+    toc_item_regex <- get_s_one_toc_items_regex()
+  }
+
+  # when we merge in the parts/items, order gets wonky - this preserves it
+  doc.parsed$original_order <- seq(nrow(doc.parsed))
+
+  part.lines <- grepl("^part[[:space:]\u00a0]+[\\dIV]{1,3}\\b",
+                      doc.parsed$text, ignore.case = TRUE) &
+                !grepl("^part[[:space:]\u00a0]+[\\dIV]{1,3}[[:space:]\u00a0]+\\d+$",
+                      doc.parsed$text, ignore.case = TRUE) &
+                (nchar(doc.parsed$text) < 100) # Hack to skip paragraphs, TOC
+                                              # and page footers
+  doc.parsed$part <- cumsum(part.lines)
+  parts <- doc.parsed[part.lines, c("part", "text", "original_order")]
+  parts$text <- gsub("\u00a0", " ", parts$text)
+  parts$text <- gsub("\\.$", "", parts$text)
+  names(parts)[names(parts) == "text"] <- "part.name"
+
+  # for some situations, we'll have caught all items - this pulls the items
+  parts$part.name <-
+    gsub("[\\.[:space:\u00a0]*item[[:space:]\u00a0]+[[:digit:]]{1}[[:alnum:]]{0,2}.*$", "",
+         parts$part.name,
+         ignore.case = T)
+
+  # \u2014 is em-dash
+  item.lines <- grepl(regex, doc.parsed$text, ignore.case = TRUE) &
+    !endsWith(doc.parsed$text, "(Continued)") &
+    (nchar(doc.parsed$text) < 300) # catch some bad item lines
+  # \u2014 is em-dash
+
+  doc.parsed$item <- cumsum(item.lines)
+
+  items <- doc.parsed[item.lines, c("part", "item", "text", "original_order")]
+  items$text <- gsub("[\u00a0[:space:]]+", " ", items$text)
+  # items$item.number <- gsub("(*UCP)^item\\s*|\\..*", "", items$text, perl = TRUE)
+  names(items)[names(items) == "text"] <- "item.name"
+  # Strip the starting Part if present
+  items$item.name <- gsub("^part [IV]{1,3}\\. ", "", items$item.name,
+                          ignore.case = T)
+
+  ##
+  # Remove parts/items w/in the TOC
+  # Items in TOC end with a page number
+  last.toc.part <- -1
+  last.toc.item <- -1
+  toc.items <- grep(toc_item_regex, items$item.name, ignore.case = TRUE)
+  # toc.items <- grep("\\b[[:digit:]]+$", items$item.name)
+  if (length(toc.items) > 0) {
+    last.toc.part <- items$part[max(toc.items)]
+    last.toc.item <- items$item[max(toc.items)]
+  }
+
+  parts <- parts[parts$part > last.toc.part, c("part", "part.name")]
+  items <- items[items$item > last.toc.item, c("part", "item", "item.name")]
+
+  doc.parsed <- merge(doc.parsed, parts, all.x = TRUE)
+  doc.parsed <- merge(doc.parsed, items, by = c("part", "item"), all.x = TRUE)
+  doc.parsed[is.na(doc.parsed$part.name), "part.name"] <- ""
+  doc.parsed[is.na(doc.parsed$item.name), "item.name"] <- ""
+
+  doc.parsed <- doc.parsed[order(doc.parsed$original_order),
+                           c(return_cols, "part.name", "item.name")]
+  rownames(doc.parsed) <- NULL
+
+  return(doc.parsed)
+}
+
+get_xpath_parts_v1 <- function () {
   # There be dragons here...
   # Basically this extacts all the individual paragraphs from a document in one
   # go. This is so bad on so many levels... but the inherent messiness of the
@@ -238,154 +395,143 @@ doc_nodes <- function(doc, xpath_base) {
     "/div/div/div/div/div/div/div/div/div/div/table"
     )
 
+    return(xpath_parts)
+}
 
-  ###
-  # Paragraph identification method
-  ###
-  para.nodes <- c("font", paste0("h", seq(5)), "a", "b", "i", "u", "sup")
-  non.para <- c("div", "dl", "li", "hr", "ol", "p", "ul", "table")
-  depths <- c("./", "./*/", "./*/*/")
-  depths <- c("./", "./*/")
-  # depths <- c("./")
-  # bases <- c("//*")
-  bases <- c("/*", "/*/*", "/*/*/*", "/*/*/*/*", "/*/*/*/*/*")
-  xpath_parts_2 <- c(
-    #
-    #paste0("//", c("div", "font", paste0("h", seq(5)), "p"), "[", paste0(c(
-    # perhaps move to not(/p) and not(/*/p) and not (/*/*/p) instead of adding
-    paste0(
-      bases,
-      "[",
-      paste0(c(
-        paste0("not(",
-               apply(expand.grid(depths, non.para), 1, function(x) {
-                       paste0(x, collapse = "")
-               }),
-               ")"),
-      # paste0(c(
-      #   paste0(paste0("count(",
-      #                 apply(expand.grid(depths, para.nodes), 1, function(x) {
-      #                         paste0(x, collapse = "") }),
-      #                 ")",
-      #                 collapse = " + "),
-      #          " = ",
-      #          paste0("count(", depths, "*)", collapse = " + ")),
-
-      # paste0("count(.//*[",
-      #        paste0("local-name() != '", para.nodes, "'", collapse = " and "),
-      #      "]) = 0"),
-      # paste0("local-name(ancestor::*[1]) != '", para.nodes, "'"),
-      "local-name() != 'title'",
-      "local-name() != 'td'"),
-      collapse = " and "),
-      "]"),
-    # Unroll tables-as-formatting
-    "//table[.//tr[count(td) > 1]]",
-    "//table[not(.//tr[count(td) > 1])]/tr/td/*"
+get_xpath_parts_v2 <- function () {
+    xpath_parts <- c(
+        "/center/div/p",
+        "/center/div/div/p"
     )
-
-  xpath_parts <- paste0(xpath_base, xpath_parts)
-
-  nodes <- xml2::xml_find_all(doc, paste0(xpath_parts, collapse = " | "))
-
-  # ensures no nested nodes
-  paths <- xml2::xml_path(nodes)
-  with.parent <- sapply(paths,
-                        function(path) {
-                          sum(startsWith(path, paths)) > 1
-                        })
-  nodes[!with.parent]
+    return(xpath_parts)
 }
 
-#' Walks into a nodlist, returning nested children
-#' @noRd
-reduce_nodes <- function(nodes) {
-    xml2::xml_find_first(nodes,
-      "descendant-or-self::*[
-        (count(*) + count(text()[normalize-space() != ''])) != 1 or
-        local-name() = 'table' or
-        (count(*) = 0 and count(text()[normalize-space() != ''])) >= 1)]")
+
+get_items_extraction_regex <- function() {
+  return("^(part [IV]{1,3}. )?item[[:space:]\u00a0]+[[:digit:]]{1}[[:alnum:]]{0,2}([\\.:\u00a0\u2014 ]|$)")
 }
 
-#' Part/Item Processing
+get_s_one_items_extraction_regex <- function() {
+  section_names <- paste(s_one_items(), collapse = "|")
+  regex <- paste('^[[:space:]]*(item[[:space:]\u00a0]+[[:digit:]]{1}[[:alnum:]]{0,2}([\\.:\u00a0\u2014 ]|$)?)?[[:space:]]*',
+                 '(', section_names, ')', '\\.*[[:space:]]*$', sep='')
+  return(regex)
+}
+
+get_toc_items_regex <- function() {
+  return("^item[[:space:]\u00a0]+[[:digit:]]{1}[[:alnum:]]{0,2}.*\\b[[:digit:]]+$")
+}
+
+get_s_one_toc_items_regex <- function() {
+  section_names <- paste(s_one_items(), collapse = "|")
+  regex <- paste('^', '(', section_names, ')', '.*\\b[[:digit:]]+$', sep='')
+  return(regex)
+}
+
+#' Get S-1 items
 #'
-#' @param doc.parsed - A dataframe with at minimum a 'text' column
-#' @param fix.errors - Try to fix document errors (e.g. missing part labels)
-#'        Default: true
 #' @noRd
-compute_parts <- function(doc.parsed,
-                          fix.errors = TRUE) {
-  return_cols <- colnames(doc.parsed)
-
-  if (nrow(doc.parsed) == 0) {
-    result <- replicate(length(return_cols) + 2, character(), simplify = F)
-    names(result) <- c(return_cols, "item.name", "part.name")
-
-    return(as.data.frame(result))
-  }
-
-  # when we merge in the parts/items, order gets wonky - this preserves it
-  doc.parsed$original_order <- seq(nrow(doc.parsed))
-
-  part.lines <- grepl("^part[[:space:]\u00a0]+[\\dIV]{1,3}\\b",
-                      doc.parsed$text, ignore.case = TRUE) &
-                !grepl("^part[[:space:]\u00a0]+[\\dIV]{1,3}[[:space:]\u00a0]+\\d+$",
-                      doc.parsed$text, ignore.case = TRUE) &
-                (nchar(doc.parsed$text) < 100) # Hack to skip paragraphs, TOC
-                                              # and page footers
-  doc.parsed$part <- cumsum(part.lines)
-  parts <- doc.parsed[part.lines, c("part", "text", "original_order")]
-  parts$text <- gsub("\u00a0", " ", parts$text)
-  parts$text <- gsub("\\.$", "", parts$text)
-  names(parts)[names(parts) == "text"] <- "part.name"
-
-  # for some situations, we'll have caught all items - this pulls the items
-  parts$part.name <-
-    gsub("[\\.[:space:\u00a0]*item[[:space:]\u00a0]+[[:digit:]]{1}[[:alnum:]]{0,2}.*$", "",
-         parts$part.name,
-         ignore.case = T)
-
-  # \u2014 is em-dash
-  item.lines <-
-    grepl("^(part [IV]{1,3}. )?item[[:space:]\u00a0]+[[:digit:]]{1}[[:alnum:]]{0,2}([\\.:\u00a0\u2014 ]|$)",
-          doc.parsed$text, ignore.case = TRUE) &
-    !endsWith(doc.parsed$text, "(Continued)") &
-    (nchar(doc.parsed$text) < 300) # catch some bad item lines
-  doc.parsed$item <- cumsum(item.lines)
-
-  items <- doc.parsed[item.lines, c("part", "item", "text", "original_order")]
-  items$text <- gsub("[\u00a0[:space:]]+", " ", items$text)
-  # items$item.number <- gsub("(*UCP)^item\\s*|\\..*", "", items$text, perl = TRUE)
-  names(items)[names(items) == "text"] <- "item.name"
-  # Strip the starting Part if present
-  items$item.name <- gsub("^part [IV]{1,3}\\. ", "", items$item.name,
-                          ignore.case = T)
-
-  ##
-  # Remove parts/items w/in the TOC
-  # Items in TOC end with a page number
-  last.toc.part <- -1
-  last.toc.item <- -1
-  toc.items <- grep(
-     "^item[[:space:]\u00a0]+[[:digit:]]{1}[[:alnum:]]{0,2}.*\\b[[:digit:]]+$",
-     items$item.name, ignore.case = TRUE)
-  # toc.items <- grep("\\b[[:digit:]]+$", items$item.name)
-  if (length(toc.items) > 0) {
-    last.toc.part <- items$part[max(toc.items)]
-    last.toc.item <- items$item[max(toc.items)]
-  }
-
-  parts <- parts[parts$part > last.toc.part, c("part", "part.name")]
-  items <- items[items$item > last.toc.item, c("part", "item", "item.name")]
-
-  doc.parsed <- merge(doc.parsed, parts, all.x = TRUE)
-  doc.parsed <- merge(doc.parsed, items, by = c("part", "item"), all.x = TRUE)
-  doc.parsed[is.na(doc.parsed$part.name), "part.name"] <- ""
-  doc.parsed[is.na(doc.parsed$item.name), "item.name"] <- ""
-
-  doc.parsed <- doc.parsed[order(doc.parsed$original_order),
-                           c(return_cols, "part.name", "item.name")]
-  rownames(doc.parsed) <- NULL
-
-  return(doc.parsed)
+s_one_items <- function() {
+  items <- c(
+    "prospectus summary",
+    "risk factors",
+    "special note regarding forward-looking statements",
+    "industry, market and other data",
+    "use of proceed",
+    "use of proceeds",
+    "dividend policy",
+    "capitalization",
+    "dilution",
+    "selected consolidated financial and other data",
+    "management’s discussion and analysis of financial condition and results of operations",
+    "our life’s work",
+    "business",
+    "management",
+    "executive compensation",
+    "certain relationships and related party transactions",
+    "principal stockholders",
+    "description of capital stock",
+    "shares eligible for future sale",
+    "material u.s. federal income tax consequences to non-u.s. holders of our class a common stock",
+    "underwriting",
+    "legal matters",
+    "experts",
+    "where you can find additional information",
+    "index to consolidated financial statements",
+    "summary",
+    "the risks you face",
+    "investment factors",
+    "performance of the trust",
+    "quantitative and qualitative disclosures about market risk",
+    "the managing owner",
+    "charges",
+    "redemptions; net asset value",
+    "the clearing brokers and swap dealers",
+    "conflicts of interest",
+    "the trust and the trustee",
+    "federal income tax aspects",
+    "purchases by employee benefit plans",
+    "plan of distribution",
+    "reports",
+    "privacy policy",
+    "statement of additional information",
+    "the futures",
+    "forward and spot markets",
+    "index to financial statements",
+    "the offering",
+    "the transactions",
+    "cautionary statement concerning forward-looking statements",
+    "selling security holders",
+    "description of securities to be registered",
+    "interests of named experts and counsel",
+    "information about the company",
+    "description of business",
+    "description of property",
+    "legal proceedings",
+    "market price of and dividends on common equity and related stockholder matters",
+    "management’s discussion and analysis of financial conditions and results of operations",
+    "changes in and disagreements with accountants on accounting and financial disclosure",
+    "directors",
+    "executive officers",
+    "promoters and control persons",
+    "security ownership of certain beneficial owners and management",
+    "certain relationships and related transactions",
+    "director independence",
+    "disclosure of commission position on indemnification for securities act liabilities",
+    "financial statements",
+    "summary of financial information",
+    "management’s discussion and analysis",
+    "industry overview",
+    "forward-looking statements",
+    "determination of offering price",
+    "selling shareholders",
+    "description of securities",
+    "reports to securities holders",
+    "description of facilities",
+    "patents and trademarks",
+    "directors and executive officers",
+    "principal accounting fees and services",
+    "material changes",
+    "other expenses of issuance and distribution",
+    "indemnification of officers and directors",
+    "indemnification of directors and officers",
+    "recent sales of unregistered securities",
+    "exhibits to the registration statement",
+    "exhibits and financial statement schedules",
+    "undertakings",
+    "signatures",
+    "statement regarding forward-looking statements",
+    "what are the risk factors involved with an investment in the fund?",
+    "selling stockholders",
+    "description of our capital stock",
+    "where you can find more information",
+    "incorporation of certain documents by reference",
+    "forepart of the registration statement and outside front cover page of prospectus",
+    "inside front and outside back cover pages of prospectus",
+    "summary information and risk factors",
+    "information with respect to the registrant",
+    "incorporation of certain information by reference",
+    "information incorporated by reference"
+  )
+  return(items)
 }
