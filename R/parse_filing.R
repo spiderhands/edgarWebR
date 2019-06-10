@@ -75,7 +75,7 @@ parse_filing <- function(x,
   doc.parts <- compute_parts(doc.parts, form.type=form.type)
 
   not_empty_parts <- doc.parts[doc.parts$item.name != '',]
-
+  
   if (length(unique(not_empty_parts$item.name)) == 0) {
     doc.parts <- build_parts(doc,
                              xpath_base,
@@ -401,7 +401,8 @@ get_xpath_parts_v1 <- function () {
 get_xpath_parts_v2 <- function () {
     xpath_parts <- c(
         "/center/div/p",
-        "/center/div/div/p"
+        "/center/div/div/p",
+        "/div/div/p/font"
     )
     return(xpath_parts)
 }
